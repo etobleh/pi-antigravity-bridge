@@ -9,14 +9,15 @@ export interface BridgeToolDescriptor {
 
 const SKIP_CIRCULAR = new Set(["AskAntigravity"]);
 
-/** Apply the configured bridge surface while always excluding recursive calls. */
+/** Select active tools in the configured bridge surface and exclude recursion. */
 export function selectBridgeTools<T extends BridgeToolDescriptor>(
 	tools: T[],
 	mode: BridgeTools,
+	activeNames: ReadonlySet<string>,
 ): T[] {
 	if (mode === "none") return [];
 	return tools.filter((tool) => {
-		if (SKIP_CIRCULAR.has(tool.name)) return false;
+		if (!activeNames.has(tool.name) || SKIP_CIRCULAR.has(tool.name)) return false;
 		if (mode === "all") return true;
 		const source = tool.sourceInfo?.source ?? "";
 		return source === "builtin" || /pi-mcp-adapter/.test(source);

@@ -6,11 +6,11 @@ All notable changes to this project will be documented in this file.
 
 ### Changed
 
-- Provider agy now starts with an extension-managed minimal `pi` agent (`--agent pi`). The agent has no native tools; registered pi builtins are exposed through the MCP bridge in both `mcp` and `all` modes, so coding operations run in pi's native tool loop. `AskAntigravity` remains unchanged and does not select the agent or bridge.
+- Provider agy now starts with an extension-managed minimal `pi` agent (`--agent pi`). The agent has no native tools; active registered pi builtins are exposed through the MCP bridge in both `mcp` and `all` modes, so coding operations run in pi's native tool loop. Disabled tools are filtered from discovery and rejected if called from a stale catalog. `AskAntigravity` remains unchanged and does not select the agent or bridge.
 
 ### Removed
 
-- The obsolete agy-native read-only tool mapping. Provider coding tools now always enter through MCP and execute in pi's native tool loop.
+- The obsolete agy-native read-only tool mapping and display-only internal `antigravity` replay tool. Provider coding tools now always enter through MCP and execute in pi's native tool loop.
 
 ## [1.3.3] - 2026-09-01
 

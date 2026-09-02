@@ -50,7 +50,7 @@ Usage maps onto pi's `Usage` (input/output/thinking/cache-read tokens); cost sta
 
 The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. No pi patch, no privileged API.
 
-The bridge advertises registered pi builtins in both `mcp` and `all` modes. Calls execute as real pi tools, so their cards use pi's renderers. The managed agent has no agy-native tools. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
+The bridge advertises active registered pi builtins in both `mcp` and `all` modes. It filters disabled tools from `tools/list` and rejects stale calls after a tool is disabled. Calls execute as real pi tools, so their cards use pi's renderers. The managed agent has no agy-native tools. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
 
 ### Context digest (G1)
 

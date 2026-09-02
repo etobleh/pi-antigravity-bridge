@@ -32,7 +32,7 @@ The bridge starts a localhost MCP server inside pi's process. `tools/list` retur
 
 **Recursion safety.** Only the provider's agy receives the extra bridge `--add-dir` and selects `--agent pi`. The `AskAntigravity` tool spawns its own plain agy with just the workspace, so it has no pi tools and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy can see the installed `pi` agent but does not select it unless explicitly launched with `--agent pi`.
 
-**Cost / fan-out.** In `all` mode every registered pi tool except `AskAntigravity` is exposed, including builtins and other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a cost/time fan-out vector.
+**Cost / fan-out.** In `all` mode every active registered pi tool except `AskAntigravity` is exposed, including builtins and other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a cost/time fan-out vector.
 
 **Security.** The MCP server binds to `127.0.0.1` only and requires a per-session shared-secret header (`x-bridge-token`) that agy sends from the bridge config; browsers cannot set custom headers on a simple cross-origin POST, so this blocks web CSRF against the loopback server. Request bodies are size-capped. This is intended for single-user developer machines: any local process running as the same user can read the token from the per-pid config and call the exposed tools, so do not run it on a shared host where you do not trust other same-user processes.
 
@@ -83,7 +83,7 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `bridgeTools` | `none` (bridge off), `mcp` (pi builtins + pi-mcp-adapter tools), `all` (every registered tool, incl. builtins and other `Ask*` delegations; always excludes `AskAntigravity`) | `mcp` |
+| `bridgeTools` | `none` (bridge off), `mcp` (active pi builtins + pi-mcp-adapter tools), `all` (every active registered tool, incl. builtins and other `Ask*` delegations; always excludes `AskAntigravity`) | `mcp` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 | `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation) or `off` (agy-native behavior) | `on` |
 

@@ -49,7 +49,7 @@ Most "stuck" reports trace to one of:
 
 - `tests/agent-config.test.ts` / `tests/driver-args.test.ts` - bundled `pi` agent installation and fixed `--agent pi` spawn arguments.
 - `tests/bridge-tools.test.ts` - bridge mode selection, including pi builtins and recursion filtering.
-- `tests/stream-roundtrip.test.ts` - the stream-json parser, wrapper replay, and no-patch toolUse round-trip store.
+- `tests/stream-roundtrip.test.ts` - the stream-json parser, activity rendering, and no-patch toolUse round-trip store.
 - `tests/provider-streaming.test.ts` - drives streamSimple with an injected fake driver (no agy) and asserts how pi's reasoning level maps onto the agy `--effort` tier (forward, clamp, omit).
 - `tests/provider-digest.test.ts` - the G1 context digest builder: injects pi-side context without replaying agy's own history.
 - `tests/patch-cleanup.test.ts` - legacy-patch detection and restore, real fs via tmpdirs, no mocks.

@@ -13,7 +13,7 @@
 // matching pi-claude-bridge's lifecycle):
 //   agy text     -> pi text block  (text_start / text_delta / text_end)
 //   agy thinking -> pi thinking block
-//   agy tool     -> a display-only wrapper card
+//   agy tool     -> a thinking/status event
 //   bridge call  -> a real pi toolCall; its toolResult resolves the parked MCP call
 
 import {
@@ -283,9 +283,6 @@ export interface StreamSimpleDeps {
 	 *  calls park as toolUse round-trips. Required with roundTrips. */
 	driver?: AgyDriver;
 	roundTrips?: ToolRoundTrips;
-	/** Replay store for the display-only antigravity wrapper tool. Without it,
-	 *  agy-native tool steps render as thinking labels only. */
-	replay?: WrapperReplay;
 }
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
@@ -346,40 +343,12 @@ export interface BridgeCallResultShape {
 }
 
 interface PendingRoundTrip {
-	/** "bridge": parked MCP HTTP call; resolve() completes it.
-	 *  "rt": wrapper round-trip; pi already replayed the recorded output, and
-	 *  the toolResult only confirms continuation. */
-	kind: "bridge" | "rt";
 	name: string;
-	resolve?: (r: BridgeCallResultShape) => void;
-	reject?: (e: Error) => void;
-	timer?: NodeJS.Timeout;
-	onAbort?: () => void;
-	signal?: AbortSignal;
-}
-
-/** Replay store for the display-only `antigravity` wrapper tool. The
- *  provider records an unexpected agy-native step's output before emitting
- *  the toolUse; the wrapper tool's execute() returns it, so pi renders a real
- *  toolCall/toolResult pair without re-running anything. */
-export class WrapperReplay {
-	#map = new Map<string, string>();
-	set(key: string, output: string): void {
-		this.#map.set(key, output);
-	}
-	get(key: string): string | undefined {
-		return this.#map.get(key);
-	}
-	/** Single-use consume: wrapper execute() takes the entry so stale outputs
-	 *  cannot be enumerated by later callers and the map cannot grow unbounded. */
-	take(key: string): string | undefined {
-		const v = this.#map.get(key);
-		this.#map.delete(key);
-		return v;
-	}
-	get size(): number {
-		return this.#map.size;
-	}
+	resolve: (r: BridgeCallResultShape) => void;
+	reject: (e: Error) => void;
+	timer: NodeJS.Timeout;
+	onAbort: () => void;
+	signal: AbortSignal;
 }
 
 export class ToolRoundTrips {
@@ -404,15 +373,10 @@ export class ToolRoundTrips {
 	#fail(callId: string, reason: string): void {
 		const entry = this.#pending.get(callId);
 		if (!entry) return;
-		if (entry.kind === "rt") {
-			// Nothing to reject, but the entry must not leak past turn death.
-			this.#pending.delete(callId);
-			return;
-		}
 		this.#pending.delete(callId);
 		clearTimeout(entry.timer);
-		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
-		entry.reject!(new Error(reason));
+		entry.signal.removeEventListener("abort", entry.onAbort);
+		entry.reject(new Error(reason));
 		this.#driver.kickIdle();
 		this.#log("round-trip-fail", { callId, name: entry.name, reason });
 	}
@@ -439,16 +403,10 @@ export class ToolRoundTrips {
 			}, BRIDGE_TIMEOUT_MS);
 			const onAbort = () => this.#fail(callId, "agy disconnected before the tool result arrived");
 			signal.addEventListener("abort", onAbort, { once: true });
-			this.#pending.set(callId, { kind: "bridge", name, resolve, reject, timer, onAbort, signal });
+			this.#pending.set(callId, { name, resolve, reject, timer, onAbort, signal });
 			handle.pushExternal({ type: "bridge_call", callId, name, args });
 		});
 	};
-
-	/** Track a wrapper round-trip. The arriving toolResult only confirms
-	 *  continuation after pi replays the recorded output. */
-	track(id: string, name: string): void {
-		this.#pending.set(id, { kind: "rt", name });
-	}
 
 	/** Complete a parked call from a pi toolResult message. Returns false when
 	 *  the id matches nothing pending. */
@@ -457,12 +415,8 @@ export class ToolRoundTrips {
 		if (!entry) return false;
 		this.#pending.delete(toolCallId);
 		clearTimeout(entry.timer);
-		if (entry.onAbort && entry.signal) entry.signal.removeEventListener("abort", entry.onAbort);
-		if (entry.kind === "rt") {
-			this.#log("round-trip-rt-done", { callId: toolCallId, name: entry.name, isError });
-			return true;
-		}
-		entry.resolve!({ content: [{ type: "text", text }], isError });
+		entry.signal.removeEventListener("abort", entry.onAbort);
+		entry.resolve({ content: [{ type: "text", text }], isError });
 		this.#driver.kickIdle();
 		this.#log("round-trip-resolved", { callId: toolCallId, name: entry.name, isError });
 		return true;
@@ -491,22 +445,10 @@ export function collectToolResults(
 export interface DriverDeps {
 	driver: AgyDriver;
 	roundTrips: ToolRoundTrips;
-	replay?: WrapperReplay;
 }
 
 /** Map one DriverActivity onto the open pi stream. Returns "parked" when the
  *  activity ended the pi call with a toolUse round-trip. */
-export interface ActivityFeatures {
-	replay?: WrapperReplay;
-	roundTrips?: ToolRoundTrips;
-}
-
-/** Process-wide counter: round-trip ids must never repeat across turns in
- *  one session transcript. */
-let RT_SEQ = 0;
-function nextRtId(): string {
-	return `wrap-${++RT_SEQ}`;
-}
 
 /** Emit a complete toolCall block and end the pi call with toolUse. */
 function emitToolUse(
@@ -535,7 +477,6 @@ export function consumeActivity(
 	activity: DriverActivity,
 	diffCtx: TurnDiffContext,
 	cwd: string,
-	feats: ActivityFeatures,
 ): "parked" | "continue" {
 	const partial = blocks.partial;
 	switch (activity.type) {
@@ -566,18 +507,10 @@ export function consumeActivity(
 				const label = edit.description ?? path.basename(absFile);
 				appendThinking(stream, blocks, `[agy edit: ${label}]\n`);
 				if (outcome.text) appendThinking(stream, blocks, `${outcome.text}\n`);
-			} else {
+			} else if (activity.name !== "call_mcp_tool") {
 				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
 			}
-			// Unexpected agy-native tools replay through the display-only wrapper
-			// and resume on the toolResult continuation. The managed pi agent has
-			// no native tools; coding tools arrive through MCP instead.
-			if (!feats.replay || !feats.roundTrips) return "continue";
-			const id = nextRtId();
-			feats.replay.set(id, activity.output ?? "(agy recorded no output)");
-			feats.roundTrips.track(id, activity.name);
-			emitToolUse(stream, blocks, id, "antigravity", { tool: activity.name, key: id });
-			return "parked";
+			return "continue";
 		}
 		case "tool_error":
 			appendThinking(stream, blocks, `[agy tool: ${activity.name} failed: ${activity.message}]\n`);
@@ -661,15 +594,10 @@ async function runTurnDriver(
 
 	ensureStarted(stream, blocks);
 	const diffCtx = new TurnDiffContext(createExecGitOps());
-	const feats: ActivityFeatures = {
-		replay: deps.replay,
-		roundTrips: deps.roundTrips,
-	};
-
 	for (;;) {
 		const activity = await handle.next();
 		if (!activity) break;
-		if (consumeActivity(stream, blocks, activity, diffCtx, cwd, feats) === "parked") return;
+		if (consumeActivity(stream, blocks, activity, diffCtx, cwd) === "parked") return;
 	}
 
 	const outcome = await handle.outcome;
@@ -713,7 +641,6 @@ export function createStreamSimple(
 			void runTurnDriver(stream, model, context, options, entries, store, {
 				driver,
 				roundTrips,
-				replay: deps.replay,
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly

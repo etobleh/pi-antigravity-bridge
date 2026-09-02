@@ -10,7 +10,9 @@ const tools = [
 	{ name: "AskAntigravity", sourceInfo: { source: "extension" } },
 ];
 
-const names = (mode: "none" | "mcp" | "all") => selectBridgeTools(tools, mode).map((tool) => tool.name);
+const allActive = new Set(tools.map((tool) => tool.name));
+const names = (mode: "none" | "mcp" | "all", active = allActive) =>
+	selectBridgeTools(tools, mode, active).map((tool) => tool.name);
 
 test("bridge tools: mcp includes builtins and adapter tools", () => {
 	assert.deepEqual(names("mcp"), ["read", "bash", "memory_search"]);
@@ -22,4 +24,8 @@ test("bridge tools: all includes builtins and extensions except recursive delega
 
 test("bridge tools: none exposes nothing", () => {
 	assert.deepEqual(names("none"), []);
+});
+
+test("bridge tools: disabled tools are not exposed", () => {
+	assert.deepEqual(names("all", new Set(["read", "AskClaude"])), ["read", "AskClaude"]);
 });

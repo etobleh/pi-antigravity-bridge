@@ -33,7 +33,7 @@ import {
 	type AgyModelEntry,
 } from "../src/models.js";
 import { SessionStore } from "../src/sessions.js";
-import { ToolRoundTrips, WrapperReplay, createStreamSimple } from "../src/provider.js";
+import { ToolRoundTrips, createStreamSimple } from "../src/provider.js";
 import { AgyDriver } from "../src/driver.js";
 import { CONFIG_PATH, loadConfig, saveConfig, type AgyMode, type BridgeTools, type ThinkingTier } from "../src/config.js";
 import { registerAskAntigravityTool, toolModelsFromRaw } from "../src/ask-tool.js";
@@ -47,7 +47,6 @@ import {
 	scanSkills,
 	type SkillLite,
 } from "../src/skills.js";
-import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
 import { selectBridgeTools } from "../src/bridge-tools.js";
 
@@ -85,11 +84,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// toolUse turns and completes them from the next call's toolResult.
 	const driver = new AgyDriver();
 	const roundTrips = new ToolRoundTrips(driver);
-	const replay = new WrapperReplay();
 	// A settled turn cannot answer its parked calls; the driver never sees
 	// ToolRoundTrips, so the provider bridges the two here.
 	driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
-	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips, replay });
+	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips });
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -117,25 +115,6 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	// and pi-ask-antigravity registers nothing (its load-time defer guard
 	// detects this package via import.meta.resolve).
 	await registerAskAntigravityTool(pi, toolModels);
-
-	// Display-only wrapper tool: the provider emits mutating agy steps as
-	// toolCalls against it (never re-executed - execute() replays the output
-	// agy already recorded). Empty description on purpose: no model should
-	// call it, it exists so pi renders proper toolCall/toolResult cards.
-	pi.registerTool({
-		name: "antigravity",
-		label: "Antigravity",
-		description: "",
-		parameters: Type.Object({
-			tool: Type.String({ description: "agy tool name that produced this step." }),
-			key: Type.String({ description: "Internal replay key. Do not fabricate." }),
-		}),
-		execute: async (_toolCallId, params) => {
-			const key = (params as { key?: string }).key ?? "";
-			const output = replay.take(key) ?? `(no recorded output for ${key})`;
-			return { content: [{ type: "text", text: output }], details: { replay: true } };
-		},
-	});
 
 	// MCP tool bridge: expose pi's tools to agy over localhost Streamable HTTP.
 	// Calls park in the provider's round-trip store and complete through pi's
@@ -193,8 +172,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const getAll = (pi as unknown as {
 			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
 		}).getAllTools.bind(pi);
+		const getActive = pi.getActiveTools.bind(pi);
+		const enabledBridgeTools = () => selectBridgeTools(getAll(), bridgeMode, new Set(getActive()));
 		const listTools = () => {
-			const tools = selectBridgeTools(getAll(), bridgeMode)
+			const tools = enabledBridgeTools()
 				.map((t) => {
 					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
 					try {
@@ -221,7 +202,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 			args: Record<string, unknown>,
 			signal: AbortSignal,
 		) => {
-			if (name !== ACTIVATE_SKILL_TOOL_NAME) return roundTrips.onToolCall(callId, name, args, signal);
+			if (name !== ACTIVATE_SKILL_TOOL_NAME) {
+				if (!enabledBridgeTools().some((tool) => tool.name === name)) {
+					return Promise.reject(new Error(`pi tool is disabled or not exposed: ${name}`));
+				}
+				return roundTrips.onToolCall(callId, name, args, signal);
+			}
 			const wanted = typeof args.name === "string" ? args.name : "";
 			const skill = findSkillByName(skills, wanted);
 			const body = skill ? readSkillBody(skill) : `unknown skill: ${wanted || "(none given)"}`;

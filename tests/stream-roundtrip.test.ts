@@ -135,7 +135,7 @@ test("cumulative guard: first chunk never counts as a resend", () => {
 });
 
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
-import { BlockState, WrapperReplay, consumeActivity, type ActivityFeatures } from "../src/provider.js";
+import { BlockState, consumeActivity } from "../src/provider.js";
 import { TurnDiffContext, createExecGitOps } from "../src/diff-render.js";
 
 function newBlocks(): BlockState {
@@ -159,47 +159,7 @@ function newBlocks(): BlockState {
 	};
 }
 
-function featsWith(rt: ToolRoundTrips, replay: WrapperReplay): ActivityFeatures {
-	return { replay, roundTrips: rt };
-}
-
-test("consumeActivity: agy-native tool replays through the antigravity wrapper card", async () => {
-	const driver = new AgyDriver();
-	const rt = new ToolRoundTrips(driver);
-	const replay = new WrapperReplay();
-	const stream = createAssistantMessageEventStream();
-	const blocks = newBlocks();
-	const collected: unknown[] = [];
-	const origPush = stream.push.bind(stream);
-	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
-		collected.push(e);
-		return origPush(e as never);
-	};
-	const out = consumeActivity(
-		stream,
-		blocks,
-		{
-			type: "tool_done",
-			stepId: 9,
-			name: "search_web",
-			args: { query: "pi coding agent" },
-			output: "search results",
-		},
-		new TurnDiffContext(createExecGitOps()),
-		"/w",
-		featsWith(rt, replay),
-	);
-	assert.equal(out, "parked");
-	const end = collected.find((e) => (e as { type: string }).type === "toolcall_end") as {
-		toolCall: { name: string; arguments: { tool: string; key: string } };
-	};
-	assert.equal(end.toolCall.name, "antigravity");
-	// The wrapper's execute() replays this recorded output.
-	assert.equal(replay.get(end.toolCall.arguments.key), "search results");
-	assert.equal(rt.resolve(end.toolCall.arguments.key, "ignored", false), true);
-});
-
-test("consumeActivity: without a replay store, tool steps stay label-only", () => {
+test("consumeActivity: agy-native tool steps stay label-only", () => {
 	const stream = createAssistantMessageEventStream();
 	const blocks = newBlocks();
 	const collected: unknown[] = [];
@@ -214,7 +174,6 @@ test("consumeActivity: without a replay store, tool steps stay label-only", () =
 		{ type: "tool_done", stepId: 1, name: "write_to_file", args: { path: "a", content: "b" }, output: "x" },
 		new TurnDiffContext(createExecGitOps()),
 		"/w",
-		{},
 	);
 	assert.equal(out, "continue");
 	const types = collected.map((e) => (e as { type: string }).type);

@@ -11,6 +11,7 @@ description: Pi coding agent
 tools: []
 mainAgent: true
 ---
+Pi coding agent mode activated, use tools in pi-antigravity-bridge MCP
 `;
 
 test("agent config: installs the bundled pi agent into a new config directory", () => {
