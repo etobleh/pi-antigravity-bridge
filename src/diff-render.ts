@@ -1,7 +1,7 @@
 // G8: surface agy's file edits as a diff in pi's thinking stream.
 //
 // agy edits with its OWN native `write_to_file` (full-file content), inside a
-// closed tool loop that lands changes on disk. pi's native colored diff viewer
+// native compatibility path that can land changes on disk. pi's colored diff viewer
 // is unreachable for agy turns (it is part of the tool-call lifecycle, and the
 // provider emits no toolCall blocks by design), so we compute a line-numbered
 // diff ourselves and stream it as text through the thinking channel, reusing

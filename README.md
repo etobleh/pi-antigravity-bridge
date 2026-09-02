@@ -14,37 +14,31 @@ Multi-turn works. The provider binds a pi session to an agy conversation id (per
 
 ## What it cannot do
 
-agy runs its own closed tool loop (`read_file`, `write_file`, `edit_file`, `run_command`) against `--add-dir`. Its read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins (`read`, `ls`, `grep`, `find`) so their cards render natively; mutating steps never execute in pi - they replay through a display-only `antigravity` wrapper tool. What used to be a hard wall for pi's other tools is bridgeable; see [MCP tool bridge](#mcp-tool-bridge-agy-uses-pis-tools) below.
+Provider-owned agy runs with `--agent pi`, an extension-managed custom agent with no native tools. Coding operations use pi's builtin tools through the MCP bridge, so reads, edits, and commands execute in pi's normal tool loop with native cards, hooks, and diff rendering. The extension installs the agent definition at `~/.gemini/config/agents/pi.md` before it starts the provider process.
 
-Residual limits (with or without the bridge):
+Residual limits:
 
-- agy's own edits still land directly on disk; pi's inline diff review does not engage for them.
-- agy commands run without per-action approval, same as every other tool in pi. See [Permissions](#permissions) below.
+- Turning the MCP bridge off leaves provider agy with no tools.
+- pi tools run without per-action approval, as they do for every other model in pi. See [Permissions](#permissions) below.
 - No cost accounting: cost stays zero because agy runs on your subscription quota. Token usage is live.
 
 ## MCP tool bridge (agy uses pi's tools)
 
 While agy is the active model it normally cannot see pi's universe of extensions: agentmemory, codegraph, web search, slack/asana, the `Ask*` delegations, and any other installed pi tool. This extension optionally bridges that gap.
 
-The bridge starts a localhost MCP server inside pi's process. `tools/list` returns pi's registered tools (built-in file/shell tools and `AskAntigravity` are filtered out), and a `tools/call` routes into pi's own tool loop via the round-trip described below. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global agy config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi is unaffected.
+The bridge starts a localhost MCP server inside pi's process. `tools/list` returns the configured pi tool surface, including registered builtin file/shell tools; only `AskAntigravity` is always filtered out. A `tools/call` routes into pi's own tool loop via the round-trip described below. agy discovers the server through a per-invocation config: the bridge writes `.agents/mcp_config.json` into a bridge-controlled dir (`~/.pi/agent/antigravity-bridge/agy-mcp-<pid>/`) and the provider passes that dir as an extra `--add-dir` when it spawns agy. The user's global MCP config (`~/.gemini/config/mcp_config.json`) is never touched, so standalone agy outside pi does not connect to the bridge.
 
 **No patch required.** Bridge calls park in the provider's round-trip store; the provider ends the pi assistant message with a `toolUse` stop reason for the real pi tool, pi executes it in its own loop (native cards, permissions, hooks), and the toolResult completes the parked MCP response on the next stream call. This is the same mechanism tianzuo/pi-antigravity uses; upstream pi APIs only.
 
-**Recursion safety.** Only the provider's agy receives the extra `--add-dir`. The `AskAntigravity` tool spawns its own agy with just the workspace, so that inner agy starts plain (no pi tools) and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy is unaffected because nothing is written to its global config.
+**Recursion safety.** Only the provider's agy receives the extra bridge `--add-dir` and selects `--agent pi`. The `AskAntigravity` tool spawns its own plain agy with just the workspace, so it has no pi tools and cannot re-enter. `AskAntigravity` is also filtered from the exposed tool list. Standalone agy can see the installed `pi` agent but does not select it unless explicitly launched with `--agent pi`.
 
-**Cost / fan-out.** Every registered pi tool except builtins (and `AskAntigravity`) is exposed, including other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a new cost/time fan-out vector that did not exist before this feature.
+**Cost / fan-out.** In `all` mode every registered pi tool except `AskAntigravity` is exposed, including builtins and other delegation tools like `AskClaude`/`AskCodex`. agy can therefore chain into other models via the bridge, which is a cost/time fan-out vector.
 
 **Security.** The MCP server binds to `127.0.0.1` only and requires a per-session shared-secret header (`x-bridge-token`) that agy sends from the bridge config; browsers cannot set custom headers on a simple cross-origin POST, so this blocks web CSRF against the loopback server. Request bodies are size-capped. This is intended for single-user developer machines: any local process running as the same user can read the token from the per-pid config and call the exposed tools, so do not run it on a shared host where you do not trust other same-user processes.
 
-### Native cards, wrapper replay, and skills
+### Native cards and skills
 
-Read-only agy steps (view_file, list_dir, grep_search, find_by_name) re-run as
-real pi builtins (`read`, `ls`, `grep`, `find`) when those builtins are active,
-so their cards render with pi's own renderers. Mutating and agy-specialty steps
-render through a display-only `antigravity` wrapper tool: its `execute()`
-replays the output agy already recorded, so the transcript gets proper
-toolCall/toolResult pairs without any double execution. Neither path re-runs
-anything with side effects.
+MCP calls to pi builtins execute as real pi tools, so their cards use pi's own renderers. The managed `pi` agent has no native tools; coding operations always enter through MCP.
 
 When the bridge is on, agy also gets one `activate_skill` tool whose enum is
 your pi Agent Skills catalog; calling it returns the SKILL.md body. The bridge
@@ -89,7 +83,7 @@ If `agy models` fails at load (binary missing, auth not done, network stall), a 
 
 | Key | Values | Default |
 | --- | --- | --- |
-| `bridgeTools` | `none` (bridge off), `mcp` (pi-mcp-adapter tools), `all` (every non-builtin tool, incl. other `Ask*` delegations) | `mcp` |
+| `bridgeTools` | `none` (bridge off), `mcp` (pi builtins + pi-mcp-adapter tools), `all` (every registered tool, incl. builtins and other `Ask*` delegations; always excludes `AskAntigravity`) | `mcp` |
 | `digest` | `off` (stable prompts; agy's prompt cache hits) or `on` (inject a delta of pi-side context - compaction summaries, other-provider turns - into each agy prompt; the delta changes every turn, so agy re-bills the full context). Enable for mixed-provider sessions where agy must see pi-side context | `off` |
 | `systemPrompt` | `on` (prepend pi's system prompt - operating instructions plus the global agent-dir `AGENTS.md` and ancestor `AGENTS.md`/`CLAUDE.md` - to the first prompt of each new agy conversation) or `off` (agy-native behavior) | `on` |
 
@@ -103,8 +97,8 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins o
 /agy                      status, or open the mode/permissions/model/thinking picker (TUI)
 /agy status               print current mode, permissions, model + session counts
 /agy doctor               bridge state, driver counters, bridge port, last lifecycle events
-/agy mode plan            review-only: agy plans but writes nothing
-/agy mode accept-edits    agy applies edits directly (default)
+/agy mode plan            review-only agy execution mode
+/agy mode accept-edits    allow agy execution (default; provider coding still uses pi tools)
 /agy permissions on|off   auto-approve / prompt for tool calls (see warning)
 /agy model flash|pro|gemini   default model alias for the AskAntigravity tool
 /agy thinking low|medium|high default thinking tier for the AskAntigravity tool
@@ -118,9 +112,9 @@ Env overrides: `AGY_BRIDGE_TOOLS`, `AGY_DIGEST`, `AGY_SYSTEM_PROMPT`. Env wins o
 
 pi itself has no built-in approval gate. Unlike codex, claude, or agy running interactively, pi does not prompt you to confirm each tool action before it runs. That is the host environment this extension lives in.
 
-Because agy runs non-interactively under this provider (nothing can answer a `y/n` prompt), this extension passes `--dangerously-skip-permissions` by default. It is technically necessary: `accept-edits` auto-approves file edits but not shell commands, so a `run_command` would otherwise hang forever waiting for a prompt nothing can answer (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). The net effect is that agy executes commands the same way pi already executes your other tools: without per-action review.
+The provider remains non-interactive and passes `--dangerously-skip-permissions` by default so an agy-native permission prompt cannot hang the stream. The managed `pi` agent does not expose agy's command or edit tools; commands and edits go through pi builtins, which have pi's normal no-confirmation behavior.
 
-If you want agy to execute nothing, use `/agy mode plan`. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
+If you want no pi tool execution, set `bridgeTools` to `none`. `/agy mode plan` still controls agy's execution mode. Do not combine `--sandbox` with skip-permissions ([#36](https://github.com/google-antigravity/antigravity-cli/issues/36)).
 
 ### Run pi inside a sandbox
 
@@ -134,7 +128,7 @@ For isolation when running any agent that executes commands without a confirmati
 | `AGY_EXTRA_ARGS` | Extra args appended to every invocation. Whitespace-split. |
 | `AGY_CONVERSATIONS_DIR` | Override the conversations DB directory. |
 | `AGY_MODE` | Override execution mode: `plan` (review-only) or `accept-edits` (default). Wins over the config file. |
-| `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` so commands don't hang on an unanswerable prompt in `-p` mode. `0`/`false` to prompt (hangs any `run_command` non-interactively). Wins over the config file. |
+| `AGY_SKIP_PERMISSIONS` | `1`/`true` (default) to pass `--dangerously-skip-permissions` for agy-native tools. `0`/`false` permits interactive prompts, which cannot be answered non-interactively. Wins over the config file. |
 | `AGY_DEFAULT_MODEL` | Default model alias for the `AskAntigravity` tool (`flash`/`pro`/`gemini`, or a tier/version qualifier). Wins over the config file. |
 | `AGY_DEFAULT_THINKING` | Default thinking tier for the `AskAntigravity` tool: `low`/`medium`/`high`. Anything else falls back to `medium`. Wins over the config file. |
 

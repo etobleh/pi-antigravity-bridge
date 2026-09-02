@@ -4,7 +4,7 @@ How the provider works internally. For build/test/debug workflow see [DEVELOPMEN
 
 ## Turn engine
 
-The provider runs one turn engine: a long-lived `agy --input-format stream-json --output-format stream-json` process per provider. Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
+The provider runs one turn engine: a long-lived `agy --agent pi --input-format stream-json --output-format stream-json` process per provider. The extension installs its bundled minimal agent at `~/.gemini/config/agents/pi.md`; that agent has no native tools, while coding tools come from pi through MCP. Turns are fed over stdin; agy emits NDJSON events on stdout; the driver parses them and streams text into pi token by token. Conversation binding comes from the `init` event, tool steps arrive as typed events (no protobuf decoding), and token usage is live.
 
 Shared infrastructure: session binding (`sessions.json`), runtime config, the `AskAntigravity` tool, the MCP tool bridge surface, and the G1 context digest (off by default - see below).
 
@@ -14,8 +14,9 @@ Shared infrastructure: session binding (`sessions.json`), runtime config, the `A
 extensions/index.ts   pi extension entry: provider registration, model discovery, /agy command, lifecycle notices
 src/provider.ts       streamSimple: pi Context -> agy turn -> pi event stream; owns the G9 round-trip store and the G1 digest
 src/driver.ts         stream-json driver: persistent agy process, turn serialization, conversation binding, idle/abort timers
+src/agent-config.ts   atomically installs the bundled minimal `pi` agy agent before spawn
+src/bridge-tools.ts   selects builtins/extension tools for the configured MCP bridge surface
 src/stream-events.ts  agy NDJSON event parser (init / step_update / result) + usage mapping onto pi's Usage
-src/native-tools.ts   maps agy read-only tool steps to real pi builtins (read/ls/grep/find) for native re-execution
 src/skills.ts         activate_skill bridge: exposes the pi Agent Skills catalog to agy, answered by the bridge directly
 src/patch-cleanup.ts  detects a leftover invokeTool patch from pre-1.3.0 installs; /agy patch-cleanup restores the backup
 src/discovery.ts      conversation-id binding for the AskAntigravity one-shot tool (agy -p never prints its conversation id)
@@ -24,7 +25,7 @@ src/sessions.ts       atomic JSON store: pi session -> agy conversation + waterm
 src/config.ts         persisted runtime config (bridgeTools, digest, mode, permissions, model/thinking defaults)
 src/ask-tool.ts       the AskAntigravity one-shot delegation tool (model/thinking defaults)
 src/mcp-server.ts     MCP tool bridge server: ferries tools/list + tools/call; calls park in the provider round-trip
-src/diff-render.ts    render agy's file edits as git diffs in pi's thinking stream
+src/diff-render.ts    compatibility rendering for agy-native edits as git diffs
 ```
 
 No generated protobuf code, no SQLite dependency.
@@ -49,7 +50,7 @@ Usage maps onto pi's `Usage` (input/output/thinking/cache-read tokens); cost sta
 
 The MCP bridge server executes no tools itself. A `tools/call` parks in the provider's round-trip store; the provider ends the current pi assistant message with a `toolUse` stop reason for the real pi tool; pi executes it in its own loop (native cards, permissions, hooks); the `toolResult` completes the parked MCP response on the next stream call. No pi patch, no privileged API.
 
-Display follows the same split: agy read-only steps (`view_file`, `list_dir`, `grep_search`, `find_by_name`) re-run as real pi builtins via `native-tools.ts`, so their cards render with pi's own renderers. Mutating and agy-specialty steps replay through a display-only `antigravity` wrapper tool - recorded output only, nothing re-executes. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
+The bridge advertises registered pi builtins in both `mcp` and `all` modes. Calls execute as real pi tools, so their cards use pi's renderers. The managed agent has no agy-native tools. The skills bridge exposes one `activate_skill` tool whose enum is the pi Agent Skills catalog; the bridge answers it directly, no round-trip.
 
 ### Context digest (G1)
 

@@ -35,6 +35,7 @@
   "files": [
     "extensions",
     "src",
+    "agents",
     "docs",
     "README.md",
     "CHANGELOG.md"

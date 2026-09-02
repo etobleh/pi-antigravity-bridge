@@ -1,8 +1,8 @@
 // Persistent agy stream-json driver.
 //
-// One long-lived `agy --input-format stream-json --output-format stream-json`
-// process per provider instance. Turns are serialized through the driver
-// queue; a turn that parks mid-flight (pi toolUse round-trip) keeps the agy
+// One long-lived `agy --agent pi --input-format stream-json --output-format
+// stream-json` process per provider instance. Turns are serialized through the
+// driver queue; a turn that parks mid-flight (pi toolUse round-trip) keeps the agy
 // process running and is re-entered via reentry() instead of spawning again.
 //
 // Recycle semantics: the child is killed and respawned when the next turn's
@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { parseAgyLine, type AgyUsage } from "./stream-events.js";
 import { bridgeMcpConfigDir, bridgeMcpConfigExists } from "./mcp-server.js";
+import { installPiAgent, PI_AGENT_NAME } from "./agent-config.js";
 
 export type DriverState = "idle" | "starting" | "ready" | "running" | "dead";
 
@@ -94,6 +95,29 @@ export interface DriverSnapshot {
 
 const LIFECYCLE_LIMIT = 24;
 const THINKING_TOKEN_FLOOR = 64;
+
+/** Build the fixed provider process arguments. Exported for unit tests. */
+export function buildAgyArgs(
+	request: DriverTurnRequest,
+	includeBridgeConfig: boolean = bridgeMcpConfigExists(),
+): string[] {
+	const args: string[] = ["--add-dir", request.cwd];
+	if (includeBridgeConfig) args.push("--add-dir", bridgeMcpConfigDir());
+	args.push("--agent", PI_AGENT_NAME, "--model", request.model);
+	if (request.effort) args.push("--effort", request.effort);
+	args.push("--mode", request.mode);
+	if (request.skipPermissions) args.push("--dangerously-skip-permissions");
+	if (request.conversationId) args.push("--conversation", request.conversationId);
+	args.push(
+		"--input-format",
+		"stream-json",
+		"--output-format",
+		"stream-json",
+		// Skills and slash commands are bridged/owned by pi, not expanded by agy.
+		"--disable-slash-commands",
+	);
+	return args;
+}
 
 interface ActiveTurn {
 	id: string;
@@ -337,6 +361,11 @@ export class AgyDriver {
 	}
 
 	#start(request: DriverTurnRequest): void {
+		// --agent resolves from the user's agy config directory. Install our
+		// bundled definition immediately before each new process starts.
+		installPiAgent();
+		const args = buildAgyArgs(request);
+
 		this.#state = "starting";
 		this.#generation += 1;
 		const generation = this.#generation;
@@ -349,22 +378,6 @@ export class AgyDriver {
 		};
 		this.#boundConversation = request.conversationId ?? undefined;
 		this.#stderrTail = "";
-
-		const args: string[] = ["--add-dir", request.cwd];
-		if (bridgeMcpConfigExists()) args.push("--add-dir", bridgeMcpConfigDir());
-		args.push("--model", request.model);
-		if (request.effort) args.push("--effort", request.effort);
-		args.push("--mode", request.mode);
-		if (request.skipPermissions) args.push("--dangerously-skip-permissions");
-		if (request.conversationId) args.push("--conversation", request.conversationId);
-		args.push(
-			"--input-format",
-			"stream-json",
-			"--output-format",
-			"stream-json",
-			// Skills and slash commands are bridged/owned by pi, not expanded by agy.
-			"--disable-slash-commands",
-		);
 
 		const child = spawn("agy", args, {
 			cwd: request.cwd,

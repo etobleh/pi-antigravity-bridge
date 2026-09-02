@@ -40,14 +40,16 @@ AGY_LIVE=1 node --experimental-strip-types scripts/smoke-stream-json.mjs
 
 Most "stuck" reports trace to one of:
 
-1. **agy blocked on a permission prompt.** `accept-edits` auto-approves file edits but NOT shell commands. Any `run_command` prompts `y/n`, which hangs forever in non-interactive mode. The provider passes `--dangerously-skip-permissions` by default to avoid this. If you turned it off (`/agy permissions off`), that is why. See the README Permissions section.
+1. **agy blocked on a permission prompt.** The provider passes `--dangerously-skip-permissions` by default because no interactive input can answer an agy-native prompt. The managed provider agent has no native tools, but this still matters to plain `AskAntigravity` runs. If you turned permissions off, restore them with `/agy permissions on`. See the README Permissions section.
 2. **agy never started.** Check `AGY_BIN` is on PATH (or set explicitly). The spawner swallows spawn ENOENT into the result's stderr, surfaced by the provider as an error event.
 3. **Conversation id never bound.** On `stream-json` the `init` event carries the id, so a missing binding means the turn never produced a result event. `/agy doctor` prints the last lifecycle events.
 4. **Print-mode environmental hang.** `pi -p` can hang with zero output in some containers (upstream [google-antigravity/antigravity-cli#318](https://github.com/google-antigravity/antigravity-cli/issues/318)). It affects built-in providers too, not this extension. Validate the turn with `scripts/test-provider.ts` instead.
 
 ## Regression tests worth knowing
 
-- `tests/stream-roundtrip.test.ts` - the stream-json engine pieces: NDJSON parser, native re-exec mapping, and the no-patch toolUse round-trip store.
+- `tests/agent-config.test.ts` / `tests/driver-args.test.ts` - bundled `pi` agent installation and fixed `--agent pi` spawn arguments.
+- `tests/bridge-tools.test.ts` - bridge mode selection, including pi builtins and recursion filtering.
+- `tests/stream-roundtrip.test.ts` - the stream-json parser, wrapper replay, and no-patch toolUse round-trip store.
 - `tests/provider-streaming.test.ts` - drives streamSimple with an injected fake driver (no agy) and asserts how pi's reasoning level maps onto the agy `--effort` tier (forward, clamp, omit).
 - `tests/provider-digest.test.ts` - the G1 context digest builder: injects pi-side context without replaying agy's own history.
 - `tests/patch-cleanup.test.ts` - legacy-patch detection and restore, real fs via tmpdirs, no mocks.

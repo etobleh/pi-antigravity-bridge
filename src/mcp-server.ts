@@ -3,7 +3,7 @@
 // agy reads .agents/mcp_config.json from its --add-dir directories (verified),
 // NOT from cwd. So we write our config into a bridge-controlled dir and the
 // provider passes that dir as an EXTRA --add-dir. AskAntigravity omits it, so
-// its agy starts plain. The user's global agy config is never touched.
+// its agy starts plain. The user's global MCP config is never touched.
 //
 // Hardening:
 //   - The whole request handler is wrapped so a client error (ECONNRESET on a
@@ -32,10 +32,6 @@ import {
 	SUPPORTED_PROTOCOL_VERSIONS,
 } from "@modelcontextprotocol/sdk/types.js";
 
-/** Tools we do NOT expose to agy: it would just error (the provider is already
- *  antigravity, so the tool's own guard refuses; advertising it is noise). */
-const SKIP_CIRCULAR = new Set(["AskAntigravity"]);
-
 const BRIDGE_MCP_KEY = "pi-antigravity-bridge";
 const TOKEN_HEADER = "x-bridge-token";
 const MAX_BODY_BYTES = 1_000_000;
@@ -53,7 +49,7 @@ export interface McpStartResult {
 }
 
 /** Provider-owned bridge surface. The provider builds the tool catalog
- *  (config-filtered: none|mcp|all + skills) and owns the toolUse round-trip:
+ *  (config-filtered builtins/extensions + skills) and owns the toolUse round-trip:
  *  onToolCall parks the call, ends the pi assistant message with stopReason
  *  "toolUse" for the REAL pi tool, and resolves when pi hands back the
  *  toolResult on the next stream call. Fail-closed: the provider enforces a

@@ -14,9 +14,9 @@ round-trip store -> the provider ends the pi assistant message with a
 `toolUse` stop reason for the real pi tool -> pi executes it in its own loop
 (native cards, permissions, hooks) -> the `toolResult` completes the parked
 MCP response on the next stream call. No pi patch. Verified end-to-end with
-`memory_search` and `ask_user_question`. The bridge exposes pi's extension
-tools (builtins are filtered out since agy has native equivalents;
-`AskAntigravity` is filtered to avoid recursion).
+`memory_search` and `ask_user_question`. The provider selects the extension's
+minimal `pi` agy agent, and the bridge exposes pi builtins plus the configured
+extension-tool surface. `AskAntigravity` is filtered to avoid recursion.
 
 What this means in practice: agy can read/write files, use memory, navigate
 code with codegraph, search the web, post to Slack, create Asana tasks, spawn
@@ -24,8 +24,9 @@ subagents, prompt the user with `ask_user_question`, and delegate to peer
 reviewers (Claude, Codex, Antigravity), all by going through pi's installed
 tooling instead of its own. Tools run in pi's process with pi's own
 credentials, so a secret never crosses the bridge, and a long call renders in
-pi's native UI while it runs. agy's file edits surface as git-sourced diffs in
-pi's thinking stream. A delta digest of pi-side context (compaction summaries,
+pi's native UI while it runs. Provider coding operations now use pi builtins;
+the older agy-native edit path retains git-sourced diff rendering for compatibility.
+A delta digest of pi-side context (compaction summaries,
 other-provider turns) is available but OFF by default (`/agy digest on`): the
 digest changes every turn and defeats agy's server-side prompt cache. The
 reverse direction is on by default (`/agy system-prompt off` to disable):

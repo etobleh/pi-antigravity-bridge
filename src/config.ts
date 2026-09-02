@@ -43,8 +43,8 @@ export interface AgyConfig {
 	 *  always available. */
 	patchCleanupNotified?: boolean;
 	/** Which pi tools the MCP bridge exposes to agy: "none" (bridge off),
-	 *  "mcp" (pi-mcp-adapter tools + skills bridge; default), "all" (every
-	 *  registered non-builtin tool incl. other Ask* delegations). */
+	 *  "mcp" (pi builtins + pi-mcp-adapter tools + skills bridge; default),
+	 *  "all" (every registered tool incl. builtins and other Ask* delegations). */
 	bridgeTools: BridgeTools;
 	/** Inject a delta digest of pi-side context (compaction summaries, turns
 	 *  handled by other providers or pi's own tools) into each agy prompt.

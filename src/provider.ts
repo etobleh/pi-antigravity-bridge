@@ -6,16 +6,15 @@
 //   2. resolve the pi model id to the exact agy model string
 //   3. look up the stored agy conversation id + last streamed step for this
 //      pi session (resume) or start fresh
-//   4. spawn agy via runAgyTurn, mapping decoded AgyEvents to pi stream events
+//   4. run the persistent minimal-agent agy driver, mapping activities to pi events
 //   5. persist the conversation id + final step idx for the next turn
 //
 // Event mapping (close-on-switch: at most one content block open at a time,
 // matching pi-claude-bridge's lifecycle):
 //   agy text     -> pi text block  (text_start / text_delta / text_end)
 //   agy thinking -> pi thinking block
-//   agy tool     -> pi thinking block, labelled "[agy tool: <name>]"
-// We do NOT emit toolCall blocks: agy runs its OWN closed tool loop, so there
-// is no toolUse stopReason and no tool-result delivery path back to pi.
+//   agy tool     -> a display-only wrapper card
+//   bridge call  -> a real pi toolCall; its toolResult resolves the parked MCP call
 
 import {
 	createAssistantMessageEventStream,
@@ -31,7 +30,6 @@ import {
 import type { Api } from "@earendil-works/pi-ai";
 import { AgyDriver, type DriverActivity, type TurnHandle } from "./driver.js";
 import { toPiUsage } from "./stream-events.js";
-import { mapAgyToolToNative } from "./native-tools.js";
 import { type AgyEffort, type AgyModelEntry } from "./models.js";
 import { SessionStore } from "./sessions.js";
 import { loadConfig } from "./config.js";
@@ -285,13 +283,9 @@ export interface StreamSimpleDeps {
 	 *  calls park as toolUse round-trips. Required with roundTrips. */
 	driver?: AgyDriver;
 	roundTrips?: ToolRoundTrips;
-	/** Replay store for the display-only antigravity wrapper tool. Required
-	 *  for native re-exec and wrapper cards; without it tool steps render as
-	 *  thinking labels only. */
+	/** Replay store for the display-only antigravity wrapper tool. Without it,
+	 *  agy-native tool steps render as thinking labels only. */
 	replay?: WrapperReplay;
-	/** Whether a pi tool is active in the session; native re-exec toolCalls
-	 *  are only emitted for active builtins (else the wrapper). */
-	nativeActive?: (name: string) => boolean;
 }
 
 /** pi thinking-effort order mirrors agy's, for clamping. */
@@ -353,8 +347,8 @@ export interface BridgeCallResultShape {
 
 interface PendingRoundTrip {
 	/** "bridge": parked MCP HTTP call; resolve() completes it.
-	 *  "rt": native re-exec / wrapper round-trip; pi already executed, the
-	 *  toolResult only confirms continuation, nothing remote to settle. */
+	 *  "rt": wrapper round-trip; pi already replayed the recorded output, and
+	 *  the toolResult only confirms continuation. */
 	kind: "bridge" | "rt";
 	name: string;
 	resolve?: (r: BridgeCallResultShape) => void;
@@ -365,8 +359,8 @@ interface PendingRoundTrip {
 }
 
 /** Replay store for the display-only `antigravity` wrapper tool. The
- *  provider records each mutating agy step's output before emitting the
- *  toolUse; the wrapper tool's execute() returns it, so pi renders a real
+ *  provider records an unexpected agy-native step's output before emitting
+ *  the toolUse; the wrapper tool's execute() returns it, so pi renders a real
  *  toolCall/toolResult pair without re-running anything. */
 export class WrapperReplay {
 	#map = new Map<string, string>();
@@ -450,8 +444,8 @@ export class ToolRoundTrips {
 		});
 	};
 
-	/** Track a native re-exec or wrapper round-trip: pi executes the tool in
-	 *  its own loop; the arriving toolResult only confirms continuation. */
+	/** Track a wrapper round-trip. The arriving toolResult only confirms
+	 *  continuation after pi replays the recorded output. */
 	track(id: string, name: string): void {
 		this.#pending.set(id, { kind: "rt", name });
 	}
@@ -498,22 +492,20 @@ export interface DriverDeps {
 	driver: AgyDriver;
 	roundTrips: ToolRoundTrips;
 	replay?: WrapperReplay;
-	nativeActive?: (name: string) => boolean;
 }
 
 /** Map one DriverActivity onto the open pi stream. Returns "parked" when the
  *  activity ended the pi call with a toolUse round-trip. */
 export interface ActivityFeatures {
 	replay?: WrapperReplay;
-	nativeActive?: (name: string) => boolean;
 	roundTrips?: ToolRoundTrips;
 }
 
 /** Process-wide counter: round-trip ids must never repeat across turns in
  *  one session transcript. */
 let RT_SEQ = 0;
-function nextRtId(kind: "nat" | "wrap"): string {
-	return `${kind}-${++RT_SEQ}`;
+function nextRtId(): string {
+	return `wrap-${++RT_SEQ}`;
 }
 
 /** Emit a complete toolCall block and end the pi call with toolUse. */
@@ -577,31 +569,15 @@ export function consumeActivity(
 			} else {
 				appendThinking(stream, blocks, `[agy tool: ${activity.name}]\n`);
 			}
-			// Native re-exec: read-only agy tools re-run as REAL pi builtins so
-			// their cards render natively. Everything else replays through the
-			// display-only wrapper tool. Both end the pi call with toolUse and
-			// resume on the toolResult continuation. Without a replay store
-			// (feature off) keep the label-only behavior.
+			// Unexpected agy-native tools replay through the display-only wrapper
+			// and resume on the toolResult continuation. The managed pi agent has
+			// no native tools; coding tools arrive through MCP instead.
 			if (!feats.replay || !feats.roundTrips) return "continue";
-			const mapped = mapAgyToolToNative(activity.name, activity.args);
-			if (mapped && (!feats.nativeActive || feats.nativeActive(mapped.tool))) {
-				const id = nextRtId("nat");
-				feats.roundTrips.track(id, mapped.tool);
-				// pi requires a reasoning argument on read/edit-class builtin calls
-				// (validated against the wrapped schema); harmless where absent.
-				emitToolUse(stream, blocks, id, mapped.tool, {
-					reasoning: `re-exec of agy ${activity.name} for display`,
-					...mapped.args,
-				});
-				return "parked";
-			}
-			{
-				const id = nextRtId("wrap");
-				feats.replay.set(id, activity.output ?? "(agy recorded no output)");
-				feats.roundTrips.track(id, activity.name);
-				emitToolUse(stream, blocks, id, "antigravity", { tool: activity.name, key: id });
-				return "parked";
-			}
+			const id = nextRtId();
+			feats.replay.set(id, activity.output ?? "(agy recorded no output)");
+			feats.roundTrips.track(id, activity.name);
+			emitToolUse(stream, blocks, id, "antigravity", { tool: activity.name, key: id });
+			return "parked";
 		}
 		case "tool_error":
 			appendThinking(stream, blocks, `[agy tool: ${activity.name} failed: ${activity.message}]\n`);
@@ -687,7 +663,6 @@ async function runTurnDriver(
 	const diffCtx = new TurnDiffContext(createExecGitOps());
 	const feats: ActivityFeatures = {
 		replay: deps.replay,
-		nativeActive: deps.nativeActive,
 		roundTrips: deps.roundTrips,
 	};
 
@@ -739,7 +714,6 @@ export function createStreamSimple(
 				driver,
 				roundTrips,
 				replay: deps.replay,
-				nativeActive: deps.nativeActive,
 			});
 		} else {
 			// Miswired extension: no driver means no engine. Fail the turn visibly

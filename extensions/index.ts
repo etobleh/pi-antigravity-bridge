@@ -5,11 +5,9 @@
 // through streamSimple, which feeds the persistent stream-json driver process
 // and streams the agent text back into pi's TUI.
 //
-// Architectural wall (cannot be worked around - see PLAN.md):
-//   agy runs its OWN closed tool loop against --add-dir. pi's read/write/edit/
-//   bash tools never fire. Tool activity is surfaced as thinking events
-//   ("[agy tool: editing foo.ts]") for visibility, but the edits already landed
-//   on disk and pi's inline diff review does not engage.
+// Provider agy runs as the minimal `pi` custom agent. Coding tools come from
+// pi through the MCP round-trip bridge, so they execute in pi's normal tool
+// loop with native cards, permissions, and hooks.
 //
 // /agy command: status, mode picker (plan / accept-edits),
 // and session clear. Config persists to ~/.pi/agent/antigravity-bridge/
@@ -49,9 +47,9 @@ import {
 	scanSkills,
 	type SkillLite,
 } from "../src/skills.js";
-import { mapAgyToolToNative } from "../src/native-tools.js";
 import { Type } from "typebox";
 import { patchStatus, restorePatch } from "../src/patch-cleanup.js";
+import { selectBridgeTools } from "../src/bridge-tools.js";
 
 function resolveAgyBinary(): string {
 	return process.env.AGY_BIN || "agy";
@@ -88,20 +86,10 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 	const driver = new AgyDriver();
 	const roundTrips = new ToolRoundTrips(driver);
 	const replay = new WrapperReplay();
-	// Native re-exec only emits for builtins actually active in the session;
-	// anything else (or an unknown name) falls back to the wrapper card.
-	const nativeActive = (name: string): boolean => {
-		try {
-			const getAll = (pi as unknown as { getAllTools: () => Array<{ name: string }> }).getAllTools.bind(pi);
-			return getAll().some((t) => t.name === name);
-		} catch {
-			return false;
-		}
-	};
 	// A settled turn cannot answer its parked calls; the driver never sees
 	// ToolRoundTrips, so the provider bridges the two here.
 	driver.onTurnEnd = () => roundTrips.failAll("antigravity turn ended with an unresolved pi tool call");
-	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips, replay, nativeActive });
+	const streamSimple = createStreamSimple({ entries, store, driver, roundTrips, replay });
 
 	pi.registerProvider("antigravity", {
 		name: "Antigravity (agy)",
@@ -201,19 +189,12 @@ export default async function (pi: ExtensionAPI): Promise<void> {
 		const bridgeMode: BridgeTools = loadConfig().bridgeTools;
 		if (bridgeMode === "none") return; // user opted out
 		if (mcpHandle) return; // already running (reload re-fires session_start)
-		const SKIP = new Set(["AskAntigravity"]);
 		const skills: SkillLite[] = scanSkills(process.cwd());
 		const getAll = (pi as unknown as {
 			getAllTools: () => Array<{ name: string; description?: string; parameters?: object; sourceInfo?: { source?: string } }>;
 		}).getAllTools.bind(pi);
 		const listTools = () => {
-			const all = getAll();
-			const filtered =
-				bridgeMode === "mcp"
-					? all.filter((t) => /pi-mcp-adapter/.test(t.sourceInfo?.source ?? ""))
-					: all.filter((t) => t.sourceInfo?.source !== "builtin");
-			const tools = filtered
-				.filter((t) => !SKIP.has(t.name))
+			const tools = selectBridgeTools(getAll(), bridgeMode)
 				.map((t) => {
 					let inputSchema: object = { type: "object", properties: {}, additionalProperties: true };
 					try {
@@ -459,7 +440,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "mode",
 			label: "Execution mode",
 			description:
-				"accept-edits: agy applies edits directly. plan: review-only, no writes. Takes effect next turn.",
+				"accept-edits: allow agy execution (provider coding still uses pi tools). plan: review-only. Takes effect next turn.",
 			currentValue: config.mode,
 			values: ["accept-edits", "plan"],
 		},
@@ -467,7 +448,7 @@ async function openAgyPicker(ui: ExtensionUIContext, ctx: AgyCommandCtx): Promis
 			id: "permissions",
 			label: "Permissions",
 			description:
-				"auto-approved: --dangerously-skip-permissions (required so commands don't hang in -p mode). prompt: agy asks y/n (hangs non-interactively).",
+				"auto-approved: --dangerously-skip-permissions for agy-native tools. prompt: agy may ask y/n (hangs non-interactively).",
 			currentValue: config.skipPermissions ? "auto-approved" : "prompt",
 			values: ["auto-approved", "prompt"],
 		},

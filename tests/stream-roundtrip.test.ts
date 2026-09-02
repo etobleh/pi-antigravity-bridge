@@ -1,10 +1,8 @@
-// Unit tests for the stream-json engine pieces: NDJSON parser, native re-exec
-// mapping, and the no-patch toolUse round-trip store.
+// Unit tests for the stream-json parser and no-patch toolUse round-trip store.
 
 import { test } from "vitest";
 import assert from "node:assert/strict";
 import { parseAgyLine, toPiUsage, type AgyUsage } from "../src/stream-events.js";
-import { mapAgyToolToNative } from "../src/native-tools.js";
 import { AgyDriver, type DriverActivity } from "../src/driver.js";
 import { ToolRoundTrips } from "../src/provider.js";
 
@@ -49,24 +47,6 @@ test("toPiUsage: maps reported counts, leaves cost zero", () => {
 	assert.equal(usage.output, 5);
 	assert.equal(usage.totalTokens, 15);
 	assert.equal(usage.cost.total, 0);
-});
-
-test("native mapping: view_file becomes read with offset/limit", () => {
-	const m = mapAgyToolToNative("view_file", { path: "/x", StartLine: 3, EndLine: 9 });
-	assert.deepEqual(m, { tool: "read", args: { path: "/x", offset: 3, limit: 7 } });
-});
-
-test("native mapping: unknown keys fall back to the wrapper (undefined)", () => {
-	assert.equal(mapAgyToolToNative("view_file", { path: "/x", huh: 1 }), undefined);
-	assert.equal(mapAgyToolToNative("write_to_file", { path: "/x" }), undefined);
-});
-
-test("native mapping: grep/list/find shapes", () => {
-	assert.deepEqual(mapAgyToolToNative("grep_search", { query: "foo" }), { tool: "grep", args: { pattern: "foo" } });
-	assert.deepEqual(mapAgyToolToNative("list_dir", { path: "/d" }), { tool: "ls", args: { path: "/d" } });
-	assert.deepEqual(mapAgyToolToNative("find_by_name", { pattern: "*.ts", path: "/s" }), {
-		tool: "find", args: { pattern: "*.ts", path: "/s" },
-	});
 });
 
 test("round-trips: parks, injects bridge_call into the active driver handle, resolves by toolCallId", async () => {
@@ -180,58 +160,10 @@ function newBlocks(): BlockState {
 }
 
 function featsWith(rt: ToolRoundTrips, replay: WrapperReplay): ActivityFeatures {
-	return { replay, nativeActive: () => true, roundTrips: rt };
+	return { replay, roundTrips: rt };
 }
 
-test("consumeActivity: read-only agy tool emits a native pi builtin toolUse and parks", async () => {
-	const driver = new AgyDriver();
-	const rt = new ToolRoundTrips(driver);
-	const replay = new WrapperReplay();
-	const stream = createAssistantMessageEventStream();
-	const blocks = newBlocks();
-	const events: unknown[] = [];
-	void stream[Symbol.asyncIterator] === undefined; // stream is push-based; collect via for-await below
-	// Collect pushed events synchronously.
-	const collected: unknown[] = [];
-	const origPush = stream.push.bind(stream);
-	// push is on the object; wrap it.
-	(stream as unknown as { push: (e: unknown) => void }).push = (e: unknown) => {
-		collected.push(e);
-		return origPush(e as never);
-	};
-	const diffCtx = new TurnDiffContext(createExecGitOps());
-	const out = consumeActivity(
-		stream,
-		blocks,
-		{
-			type: "tool_done",
-			stepId: 7,
-			name: "view_file",
-			args: { path: "/w/some/file.ts", StartLine: 1, EndLine: 4 },
-			output: "file body",
-		},
-		diffCtx,
-		"/w",
-		featsWith(rt, replay),
-	);
-	assert.equal(out, "parked");
-	const types = collected.map((e) => (e as { type: string }).type);
-	assert.ok(types.includes("toolcall_start") && types.includes("toolcall_end"));
-	const end = collected.find((e) => (e as { type: string }).type === "toolcall_end") as {
-		toolCall: { name: string; arguments: { path: string } };
-	};
-	assert.equal(end.toolCall.name, "read");
-	assert.equal(end.toolCall.arguments.path, "/w/some/file.ts");
-	// pi requires a reasoning argument on read/edit-class builtin calls.
-	assert.equal(typeof (end.toolCall.arguments as Record<string, unknown>).reasoning, "string");
-	const done = collected.find((e) => (e as { type: string }).type === "done") as { reason: string };
-	assert.equal(done.reason, "toolUse");
-	// Tracked as a continuation round-trip, not an MCP bridge call.
-	assert.equal(rt.pendingIds.length, 1);
-	assert.equal(rt.resolve(rt.pendingIds[0], "result text", false), true);
-});
-
-test("consumeActivity: mutating tool replays through the antigravity wrapper card", async () => {
+test("consumeActivity: agy-native tool replays through the antigravity wrapper card", async () => {
 	const driver = new AgyDriver();
 	const rt = new ToolRoundTrips(driver);
 	const replay = new WrapperReplay();
@@ -249,9 +181,9 @@ test("consumeActivity: mutating tool replays through the antigravity wrapper car
 		{
 			type: "tool_done",
 			stepId: 9,
-			name: "write_to_file",
-			args: { path: "out.txt", content: "hi" },
-			output: "wrote 2 bytes",
+			name: "search_web",
+			args: { query: "pi coding agent" },
+			output: "search results",
 		},
 		new TurnDiffContext(createExecGitOps()),
 		"/w",
@@ -263,7 +195,7 @@ test("consumeActivity: mutating tool replays through the antigravity wrapper car
 	};
 	assert.equal(end.toolCall.name, "antigravity");
 	// The wrapper's execute() replays this recorded output.
-	assert.equal(replay.get(end.toolCall.arguments.key), "wrote 2 bytes");
+	assert.equal(replay.get(end.toolCall.arguments.key), "search results");
 	assert.equal(rt.resolve(end.toolCall.arguments.key, "ignored", false), true);
 });
 
